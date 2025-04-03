@@ -8,6 +8,12 @@
 <body style="text-align: center; font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
     <h1>MIDI to PNG Converter</h1>
     
+    <!-- エラー表示用の要素を追加 -->
+    <div id="errorDisplay" style="display: none; margin: 20px; padding: 10px; background-color: #ffebee; border: 1px solid #ffcdd2; border-radius: 4px;">
+        <p id="errorMessage" style="color: #c62828; margin: 0; user-select: text;"></p>
+        <button onclick="copyError()" style="margin-top: 10px; padding: 5px 10px;">エラーをコピー</button>
+    </div>
+    
     <!-- 進行状況表示用の要素を追加 -->
     <div id="loadingStatus" style="color: #666; margin-bottom: 20px;">
         Python環境を準備中です... (0%)
@@ -42,6 +48,23 @@
     <canvas id="outputCanvas" style="display: none;"></canvas>
 
     <script>
+        // エラーコピー関数を追加
+        function copyError() {
+            const errorText = document.getElementById('errorMessage').textContent;
+            navigator.clipboard.writeText(errorText)
+                .then(() => alert('エラーメッセージをクリップボードにコピーしました'))
+                .catch(err => alert('コピーに失敗しました: ' + err));
+        }
+
+        // エラー表示関数
+        function showError(message) {
+            const errorDisplay = document.getElementById('errorDisplay');
+            const errorMessage = document.getElementById('errorMessage');
+            errorMessage.textContent = message;
+            errorDisplay.style.display = 'block';
+            console.error(message);
+        }
+
         async function initPyodide() {
             const statusElement = document.getElementById('loadingStatus');
             
@@ -167,8 +190,9 @@
                 statusElement.style.color = 'green';
                 return pyodide;
             } catch (error) {
-                statusElement.textContent = 'エラーが発生しました: ' + error.message;
+                statusElement.textContent = 'エラーが発生しました';
                 statusElement.style.color = 'red';
+                showError(error.message);
                 throw error;
             }
         }
@@ -216,7 +240,7 @@
 
                 alert('変換が完了しました！');
             } catch (error) {
-                alert('エラーが発生しました: ' + error.message);
+                showError('エラーが発生しました: ' + error.message);
                 console.error(error);
             }
         };
