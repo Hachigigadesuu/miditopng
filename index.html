@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>MIDI to PNG Converter</title>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js"></script>
+</head>
+<body style="text-align: center; font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <h1>MIDI to PNG Converter</h1>
+    
+    <!-- 進行状況表示用の要素を追加 -->
+    <div id="loadingStatus" style="color: #666; margin-bottom: 20px;">
+        Python環境を準備中です... (0%)
+    </div>
+    
+    <div>
+        <a href="https://hachigigadesuu.github.io/" style="display: inline-block; margin-bottom: 20px;">&lt;&lt; ホームページに戻る</a>
+    </div>
+    <hr>
+
+    <form id="converter" style="margin-top: 20px;">
+        <p>
+            <label>MIDIファイル：<br>
+                <input type="file" name="file" accept=".mid,.midi" required style="margin-top: 5px;">
+            </label>
+        </p>
+        <p>
+            <label>出力ファイル名：<br>
+                <input type="text" name="filename" placeholder="output.png" style="margin-top: 5px;">
+            </label>
+        </p>
+        <p>
+            <label>1ピクセルあたりの時間：<br>
+                <input type="number" name="length" value="12" min="1" max="1000" style="margin-top: 5px;">
+            </label>
+        </p>
+        <p>
+            <input type="submit" value="変換" style="padding: 5px 20px;">
+        </p>
+    </form>
+
+    <canvas id="outputCanvas" style="display: none;"></canvas>
+
+    <script>
+        async function initPyodide() {
+            const statusElement = document.getElementById('loadingStatus');
+            
+            try {
+                statusElement.textContent = 'Python環境をダウンロード中... (20%)';
+                let pyodide = await loadPyodide({
+                    stdout: (text) => {
+                        console.log(text);
+                        if (text.includes('Loading')) {
+                            statusElement.textContent = 'パッケージをロード中... (40%)';
+                        }
+                    }
+                });
+
+                statusElement.textContent = 'numpyをインストール中... (60%)';
+                await pyodide.loadPackage('numpy');
+
+                statusElement.textContent = 'pillowをインストール中... (80%)';
+                await pyodide.loadPackage('pillow');
+
+                statusElement.textContent = 'Pythonコードを初期化中... (90%)';
+                await pyodide.runPythonAsync(`
+                    import io
+                    import struct
+                    from PIL import Image, ImageDraw
+
+                    class MidiParser:
+                        def __init__(self, data):
+                            self.data = data
+                            self.position = 0
+                            self.tracks = []
+
+                        def read_bytes(self, length):
+                            result = self.data[self.position:self.position + length]
+                            self.position += length
+                            return result
+
+                        def read_variable_length(self):
+                            value = 0
+                            while True:
+                                byte = self.read_bytes(1)[0]
+                                value = (value << 7) | (byte & 0x7F)
+                                if not byte & 0x80:
+                                    break
+                            return value
+
+                        def parse(self):
+                            # ヘッダーチャンク
+                            if self.read_bytes(4) != b'MThd':
+                                raise ValueError("Invalid MIDI file")
+                            header_length = struct.unpack('>I', self.read_bytes(4))[0]
+                            format_type = struct.unpack('>H', self.read_bytes(2))[0]
+                            num_tracks = struct.unpack('>H', self.read_bytes(2))[0]
+                            time_division = struct.unpack('>H', self.read_bytes(2))[0]
+
+                            # トラックチャンク
+                            for i in range(num_tracks):
+                                if self.read_bytes(4) != b'MTrk':
+                                    raise ValueError("Invalid track chunk")
+                                track_length = struct.unpack('>I', self.read_bytes(4))[0]
+                                track_start = self.position
+                                track_events = []
+
+                                while self.position < track_start + track_length:
+                                    delta_time = self.read_variable_length()
+                                    status = self.read_bytes(1)[0]
+
+                                    if status == 0xFF:  # メタイベント
+                                        meta_type = self.read_bytes(1)[0]
+                                        length = self.read_variable_length()
+                                        self.read_bytes(length)
+                                    elif status >= 0x80:  # MIDIイベント
+                                        if status >= 0x90 and status <= 0x9F:  # Note On
+                                            note = self.read_bytes(1)[0]
+                                            velocity = self.read_bytes(1)[0]
+                                            if velocity > 0:
+                                                track_events.append({
+                                                    'time': delta_time,
+                                                    'type': 'note_on',
+                                                    'note': note,
+                                                    'velocity': velocity
+                                                })
+                                    else:
+                                        self.read_bytes(1)
+
+                                self.tracks.append(track_events)
+                            return self
+
+                    def midi_to_image(midi_data, length=12):
+                        midi = MidiParser(midi_data).parse()
+                        im_height = 128  # MIDI音階の数
+                        mid_length = 0
+
+                        # 総時間を計算
+                        for track in midi.tracks:
+                            track_time = sum(event['time'] for event in track)
+                            mid_length = max(mid_length, track_time)
+
+                        im_length = max(1, int(mid_length / length))
+
+                        # 画像作成
+                        im = Image.new("RGB", (im_length, im_height), (0, 0, 0))
+                        draw = ImageDraw.Draw(im)
+
+                        # ノートの描画
+                        for track in midi.tracks:
+                            current_time = 0
+                            for event in track:
+                                current_time += event['time']
+                                if event['type'] == 'note_on':
+                                    x = int(current_time / length)
+                                    y = im_height - event['note'] - 1
+                                    if 0 <= x < im_length and 0 <= y < im_height:
+                                        draw.point((x, y), fill=(255, 255, 255))
+
+                        # PNG形式で返す
+                        img_bytes = io.BytesIO()
+                        im.save(img_bytes, format='PNG')
+                        return img_bytes.getvalue()
+                `);
+
+                statusElement.textContent = '準備完了！';
+                statusElement.style.color = 'green';
+                return pyodide;
+            } catch (error) {
+                statusElement.textContent = 'エラーが発生しました: ' + error.message;
+                statusElement.style.color = 'red';
+                throw error;
+            }
+        }
+
+        let pyodide;
+        initPyodide().then(p => pyodide = p);
+
+        document.getElementById('converter').onsubmit = async function(e) {
+            e.preventDefault();
+            
+            if (!pyodide) {
+                alert('Pythonの初期化中です。しばらくお待ちください。');
+                return;
+            }
+
+            const file = this.elements.file.files[0];
+            const length = parseInt(this.elements.length.value);
+            let filename = this.elements.filename.value.trim() || 'output.png';
+            if (!filename.toLowerCase().endsWith('.png')) {
+                filename += '.png';
+            }
+
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                const uint8Array = new Uint8Array(arrayBuffer);
+                
+                // PythonのBytes型に変換
+                const midiBytes = pyodide.toPy(uint8Array);
+                
+                // Python関数を呼び出し
+                const result = await pyodide.runPythonAsync(`
+                    midi_to_image(${midiBytes}, ${length})
+                `);
+
+                // 結果をBlobに変換してダウンロード
+                const blob = new Blob([result.toJs()], {type: 'image/png'});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+                alert('変換が完了しました！');
+            } catch (error) {
+                alert('エラーが発生しました: ' + error.message);
+                console.error(error);
+            }
+        };
+    </script>
+</body>
+</html>
